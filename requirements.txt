@@ -1,0 +1,10 @@
+requests>=2.31
+feedparser>=6.0
+pandas>=2.0
+duckdb>=1.1          # méthode recommandée par HF pour requêter edwarddgao/open-apply-jobs
+                      # (lecture Parquet en place via hf://, bien plus rapide que le streaming
+                      # ligne à ligne) — si absent ou hors ligne, repli automatique sur `datasets`
+datasets>=2.19      # pour lire les datasets Hugging Face (repli si duckdb indisponible)
+hf_xet              # accélère nettement les téléchargements depuis huggingface.co (vu dans ton log)
+python-jobspy>=1.1  # pour LinkedIn/Indeed/Glassdoor/ZipRecruiter/Naukri/Bayt
+playwright>=1.40     # pour scan_endpoints.py — après: playwright install chromium
