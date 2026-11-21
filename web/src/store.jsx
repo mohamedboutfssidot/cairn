@@ -108,6 +108,14 @@ export function AppProvider({ children }) {
     loadJobs().catch(() => {}).finally(() => { loading.current = false; });
   }, [loadJobs]);
 
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => { if (!busy) setStopping(false); }, [busy]);
+  // Arrête la recherche ou l'actualisation en cours : les offres déjà trouvées et les recherches précédentes restent.
+  const stopAll = async () => {
+    setStopping(true);
+    try { await api.stopSearch(); } catch (e) { setStopping(false); say(e.message); }
+  };
+
   const finishing = useRef(false);
   const finishRun = useCallback(async (cur, p) => {
     if (finishing.current) return;
@@ -115,7 +123,10 @@ export function AppProvider({ children }) {
     try {
       await loadJobs().catch(() => {});
       if (p.error) say("La recherche a échoué : " + p.error);
-      else {
+      else if (p.cancelled) {
+        if (cur.save && p.found > 0) { await api.saveSearch(cur.params, cur.label).catch(() => {}); await loadSearches(); }
+        say(p.found ? `Recherche arrêtée. Les ${p.found} offres déjà trouvées sont conservées, comme tes recherches précédentes.` : "Recherche arrêtée. Ta liste et tes recherches précédentes n’ont pas changé.");
+      } else {
         if (cur.save) { await api.saveSearch(cur.params, cur.label).catch(() => {}); await loadSearches(); }
         say(`Recherche terminée : ${p.stock ?? p.total ?? 0} offres dans ta liste.`);
       }
@@ -138,7 +149,8 @@ export function AppProvider({ children }) {
           setRefresh(r);
           if (!r.running) {
             await loadJobs().catch(() => {}); await loadSearches();
-            if (r.error) say("Actualisation terminée avec une erreur : " + r.error);
+            if (r.cancelled) say("Actualisation arrêtée. Les offres déjà trouvées et tes recherches sont conservées.");
+            else if (r.error) say("Actualisation terminée avec une erreur : " + r.error);
             else say(r.new ? `${r.new} nouvelle${r.new > 1 ? "s" : ""} offre${r.new > 1 ? "s" : ""}.` : "Tout est à jour.");
           }
         } else if (cur && !p.running && p.search_id === cur.id) {
@@ -269,7 +281,7 @@ export function AppProvider({ children }) {
   const isNewcomer = loaded && !offline && jobs.length === 0 && tracked.length === 0 && searches.length === 0 && !run;
 
   const value = {
-    jobs, hiddenJobs, total, cleanList, progress, busy, loaded, offline, meta, searches, refresh, cand, profile, alerts, kitSettings, run, modal, toast,
+    jobs, hiddenJobs, total, cleanList, progress, busy, stopAll, stopping, loaded, offline, meta, searches, refresh, cand, profile, alerts, kitSettings, run, modal, toast,
     view, q, f, sort, wiz, ob, home, isDark, theme, tracked, due, fresh, counts, isNewcomer,
     setView, setQ, setF, setSort, setWiz, setOb, setModal, setKitSettings, setAlerts, say, toggleTheme, setTheme,
     loadJobs, loadSearches, refreshAll, askRefresh, launchSearch, findJob, setStatus, untrack, saveNote, setFollow, hide, unhide,

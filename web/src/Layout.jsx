@@ -48,7 +48,7 @@ export default function Layout() {
             <NavLink className="avatar" to="/profil" aria-label="Mon profil">{ini || "?"}</NavLink>
           </div>
         </div>
-        <ProgressStrip progress={a.progress} refresh={a.refresh} run={run} onSeeOffers={() => nav("/offres")} />
+        <ProgressStrip progress={a.progress} refresh={a.refresh} run={run} onSeeOffers={() => nav("/offres")} onStop={a.stopAll} stopping={a.stopping} />
       </header>
       <main className="wrap" id="app">
         {offline && (

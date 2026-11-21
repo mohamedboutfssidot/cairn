@@ -242,7 +242,7 @@ function Bar({ v }) {
 }
 
 /** Bandeau global : où en est la recherche, avec le détail site par site. */
-export function ProgressStrip({ progress, refresh, run, onSeeOffers }) {
+export function ProgressStrip({ progress, refresh, run, onSeeOffers, onStop, stopping }) {
   const [open, setOpen] = useState(false);
   const on = !!run || !!refresh?.running || !!progress?.running;
   if (!on) return null;
@@ -256,6 +256,7 @@ export function ProgressStrip({ progress, refresh, run, onSeeOffers }) {
         <span className="sp" />
         {v.found > 0 && <button type="button" className="btn quiet sm" onClick={onSeeOffers}>Voir les offres</button>}
         <button type="button" className="btn quiet sm" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Masquer" : "Détails"}</button>
+        {onStop && <button type="button" className="btn sm danger" disabled={stopping} onClick={onStop}>{stopping ? "Arrêt…" : "Arrêter"}</button>}
       </div>
       <Bar v={v} />
       {open && (
@@ -269,11 +270,11 @@ export function ProgressStrip({ progress, refresh, run, onSeeOffers }) {
 }
 
 /** Même information, intégrée dans une page (parcours guidé). */
-export function ProgressBody({ progress, refresh, run, onSeeOffers }) {
+export function ProgressBody({ progress, refresh, run, onSeeOffers, onStop, stopping }) {
   const v = progressView(progress, refresh, run);
   return (
     <div className="runbox" aria-live="polite">
-      <div className="row"><b>{v.title}</b><span className="muted">{v.summary}</span><span className="sp" />{v.found > 0 && <button type="button" className="btn sm" onClick={onSeeOffers}>Voir les offres trouvées</button>}</div>
+      <div className="row"><b>{v.title}</b><span className="muted">{v.summary}</span><span className="sp" />{v.found > 0 && <button type="button" className="btn sm" onClick={onSeeOffers}>Voir les offres trouvées</button>}{onStop && <button type="button" className="btn sm danger" disabled={stopping} onClick={onStop}>{stopping ? "Arrêt…" : "Arrêter"}</button>}</div>
       <Bar v={v} />
       <SourceList srcs={v.srcs} />
     </div>

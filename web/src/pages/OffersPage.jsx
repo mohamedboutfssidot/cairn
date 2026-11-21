@@ -3,7 +3,10 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useApp } from "../store.jsx";
 import { LANGN, LEVELS, STATUSES, STLABEL, ago, countryKey, fmtD, isLocal, jobSite, stripHtml } from "../meta.js";
 import { Cp, Disc, Icon, ICONS, Seg } from "../ui.jsx";
+import { Suspense, lazy } from "react";
 import ByPost from "./ByPost.jsx";
+const MapView = lazy(() => import("./MapView.jsx"));
+const MiniMap = lazy(() => import("./MiniMap.jsx"));
 import { buildPostes, groupJobs } from "../groups.js";
 
 export function matchJob(j, { f, q, view, home }, skip = "") {
@@ -39,6 +42,8 @@ export default function OffersPage() {
 
   const [gmode, setGmode] = useState(() => { try { return localStorage.getItem("cairn-gmode") || "poste"; } catch { return "poste"; } });
   const [group, setGroup] = useState(null);
+  const [focus, setFocus] = useState(null);
+  const showOnMap = (job) => { setFocus({ url: job.url, t: Date.now() }); setSel(job.url); setView("map"); setGroup(null); setDetailOpen(false); };
   const changeGmode = (m) => { setGmode(m); setGroup(null); try { localStorage.setItem("cairn-gmode", m); } catch { /* ignore */ } };
   const keywords = useMemo(() => {
     const out = [...(a.profile?.titles || [])];
@@ -60,7 +65,7 @@ export default function OffersPage() {
     const age = (j) => (j.days == null ? 9999 : j.days);
     return arr.sort((x, y) => (sort === "score" ? ((y.score ?? -1) - (x.score ?? -1)) || (age(x) - age(y)) : (age(x) - age(y)) || ((y.score ?? -1) - (x.score ?? -1))));
   }, [base, f, q, view, sort, activeGroup, home]);
-  const cur = list.find((j) => j.url === sel) || list[0] || null;
+  const cur = view === "map" ? list.find((j) => j.url === sel) || null : list.find((j) => j.url === sel) || list[0] || null;
   const fc = filterCount(f);
   const hasProfile = jobs.some((j) => j.score != null);
   const tracked = jobs.filter((j) => j.status).length;
@@ -75,7 +80,7 @@ export default function OffersPage() {
     );
   }
   const all = jobs;
-  const views = [["foryou", "Pour toi", all.filter((j) => j.score != null && j.score >= 70).length], ["new", "Nouvelles", all.filter((j) => j.is_new).length], ["local", home ? `Local · ${home}` : "Local", all.filter((j) => isLocal(j, home)).length], ["remote", "Remote", all.filter((j) => j.remote === true && !isLocal(j, home)).length], ["all", "Toutes", all.length], ["poste", "Par poste", null]];
+  const views = [["foryou", "Pour toi", all.filter((j) => j.score != null && j.score >= 70).length], ["new", "Nouvelles", all.filter((j) => j.is_new).length], ["local", home ? `Local · ${home}` : "Local", all.filter((j) => isLocal(j, home)).length], ["remote", "Remote", all.filter((j) => j.remote === true && !isLocal(j, home)).length], ["all", "Toutes", all.length], ["poste", "Par poste", null], ["map", "Carte", null]];
   const upd = meta.last_updated ? new Date(meta.last_updated).toLocaleDateString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "jamais";
 
   return (
@@ -109,13 +114,22 @@ export default function OffersPage() {
       {activeGroup && (
         <div className="row"><button type="button" className="btn sm" onClick={() => setGroup(null)}>← Tous les postes</button>
           <span className="chip">{activeGroup.label} <button type="button" aria-label="Retirer ce poste" onClick={() => setGroup(null)}>×</button></span></div>)}
-      {(view !== "poste" || activeGroup) && <div className={`omain${detailOpen ? " detail-open" : ""}`}>
+      {view === "map" && (
+        <div className={`omain mapmode${detailOpen && cur ? " detail-open" : ""}`}>
+          <div className="listcol">
+            <Suspense fallback={<div className="mapbox"><div className="mapmsg" role="status">Chargement de la carte…</div></div>}>
+              <MapView jobs={list} selected={cur?.url} onSelect={(j) => { setSel(j.url); setDetailOpen(true); }} dark={a.isDark} fitKey={JSON.stringify([f, q, home])} focus={focus} />
+            </Suspense>
+          </div>
+          <div className="detail">{cur ? <Detail key={cur.url} job={cur} onBack={() => setDetailOpen(false)} onMap={showOnMap} /> : <div className="empty"><h3>Choisis une offre sur la carte</h3><p>Clique sur un point pour voir l’offre ici.</p></div>}</div>
+        </div>)}
+      {view !== "map" && (view !== "poste" || activeGroup) && <div className={`omain${detailOpen ? " detail-open" : ""}`}>
         <div className="listcol">
           <div className="small muted" style={{ marginBottom: 8 }}>{list.length} offre{list.length > 1 ? "s" : ""}</div>
           {list.length ? (
             <div className="joblist">{list.map((j) => (
               <button key={j.url} type="button" className="job" aria-current={cur && cur.url === j.url ? "true" : undefined} onClick={() => { setSel(j.url); setDetailOpen(true); }}>
-                <div className="t">{j.title}</div><div className="c">{j.company} · {j.city}</div>
+                <div className="t">{j.title}</div><div className="c">{j.company} · {[j.city, j.country].filter(Boolean).join(", ") || (j.remote ? "Télétravail" : "Lieu non indiqué")}</div>
                 <div className="m"><Cp score={j.score} />{j.is_new && <span className="new">Nouveau</span>}{j.status && <span className={`st ${j.status}`}>{STLABEL[j.status]}</span>}<span>{ago(j.days)}</span></div>
                 {j.reasons[0] && <div className="why">{j.reasons[0]}</div>}
               </button>))}</div>
@@ -123,16 +137,17 @@ export default function OffersPage() {
             <div className="empty"><h3>Aucune offre ici</h3><p>Essaie une autre vue ou retire un filtre.</p>
               <button type="button" className="btn" onClick={() => { setView("all"); setQ(""); setF({ ...f, source: "", level: "", lang: "", visa: "", salary: 0, minScore: 0, hidden: false, country: "", city: "", period: 0 }); }}>Tout afficher</button></div>)}
         </div>
-        <div className="detail">{cur && <Detail key={cur.url} job={cur} onBack={() => setDetailOpen(false)} />}</div>
+        <div className="detail">{cur && <Detail key={cur.url} job={cur} onBack={() => setDetailOpen(false)} onMap={showOnMap} />}</div>
       </div>}
     </div>
   );
 }
 
-function Detail({ job, onBack }) {
+function Detail({ job, onBack, onMap }) {
   const a = useApp();
   const nav = useNavigate();
   const [full, setFull] = useState(null);
+  const [showMini, setShowMini] = useState(false);
   const [note, setNote] = useState(job.note || "");
   useEffect(() => { let on = true; a.api.fetchJob(job.url).then((r) => on && setFull(r)).catch(() => {}); return () => { on = false; }; }, [job.url]); // eslint-disable-line react-hooks/exhaustive-deps
   const desc = stripHtml(full?.description || job.description || "");
@@ -143,7 +158,7 @@ function Detail({ job, onBack }) {
       <button type="button" className="btn quiet sm back" onClick={onBack}>← Retour à la liste</button>
       <div className="card">
         <h2>{job.title}</h2>
-        <p className="muted" style={{ marginTop: 4 }}>{job.company} · {job.city} · {ago(job.days)}</p>
+        <p className="muted" style={{ marginTop: 4 }}>{job.company} · {[job.city, job.country].filter(Boolean).join(", ") || (job.remote ? "Télétravail" : "Lieu non indiqué")} · {ago(job.days)}</p>
         <div className="row" style={{ marginTop: 14 }}><Cp score={job.score} />{job.score != null && <span className="small muted">Score {job.score} sur 100</span>}</div>
         {job.reasons.length > 0 && <ul className="why-l">{job.reasons.map((r) => <li key={r} className={/^À éviter|Pas de/.test(r) ? "x" : ""}>{r}</li>)}</ul>}
         <div className="facts">
@@ -152,6 +167,13 @@ function Detail({ job, onBack }) {
           {sal && <span>Salaire <b>{Math.round((job.sal_usd_min || job.sal_usd_max) / 1000)}k{job.sal_usd_max && job.sal_usd_max !== job.sal_usd_min ? ` à ${Math.round(job.sal_usd_max / 1000)}k` : ""} $ par an</b></span>}
           {job.visa === "yes" && <span><b>Visa possible</b></span>}{job.visa === "no" && <span><b>Pas de visa</b></span>}
           {job.remote === true && <span><b>Remote</b></span>}
+        </div>
+        <div className="place">
+          <div className="pl"><b>📍 {[job.city, job.country].filter(Boolean).join(", ") || (job.remote ? "Télétravail, sans lieu fixe" : "Lieu non indiqué")}</b>
+            {job.remote === true && <span className="chip">Remote</span>}
+            <button type="button" className="btn sm" aria-expanded={showMini} onClick={() => setShowMini(!showMini)}>{showMini ? "Masquer la carte" : "Voir l’emplacement"}</button>
+            {onMap && <button type="button" className="btn sm" onClick={() => onMap(job)}>Voir sur la grande carte</button>}</div>
+          {showMini && <Suspense fallback={<p className="small muted">Chargement de la carte…</p>}><MiniMap job={job} dark={a.isDark} /></Suspense>}
         </div>
         <p className="small muted">Source : <b>{jobSite(job.sources[0])}</b>{others.length ? `, aussi trouvée sur ${others.map(jobSite).join(", ")}` : ""}.</p>
         <div className="cta">

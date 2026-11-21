@@ -123,7 +123,7 @@ function Onboarding() {
             {ob.step === 3 && (
               <div className="bd">
                 <p>Cairn va chercher {picked.length} poste{picked.length > 1 ? "s" : ""} en {k.co?.label} ({k.langs.map((l) => LANGN[l].toLowerCase()).join(", ")}) sur les sites disponibles, et garder les offres en mémoire.</p>
-                {run ? <ProgressBody progress={a.progress} refresh={a.refresh} run={run} onSeeOffers={() => nav("/offres")} /> : (
+                {run ? <ProgressBody progress={a.progress} refresh={a.refresh} run={run} onSeeOffers={() => nav("/offres")} onStop={a.stopAll} stopping={a.stopping} /> : (
                   <>
                     <Disc label={`Choisir ou écrire mes postes (${picked.length})`}><TitleChooser wiz={wiz} setWiz={setWiz} /></Disc>
                     <div className="row"><button type="button" className="btn primary big" disabled={!picked.length} onClick={() => a.launchSearch({ ...wiz, picked, edited: true, save: true }, "onboard")}>Lancer la recherche</button></div>

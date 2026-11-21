@@ -662,13 +662,29 @@ def _dedup(jobs: list[Job]) -> list[Job]:
 # chaque offre apparaît dès qu'une source la renvoie, sans attendre la fin.
 _progress_lock = threading.Lock()
 _progress = {"running": False, "search_id": None, "mode": None, "sources": {}, "found": 0,
-             "tick": 0, "started": None, "finished": None, "error": None, "new": 0, "total": None}
+             "tick": 0, "started": None, "finished": None, "error": None, "new": 0, "total": None,
+             "cancelled": False}
+
+# Recherches arrêtées par l'utilisateur : leur fil continue peut-être en coulisse (une source déjà
+# lancée ne s'interrompt pas toujours), mais plus rien n'est enregistré et rien n'est supprimé.
+_cancelled_ids = set()
+
+
+class _Stopped(BaseException):
+    """Levée dans les rappels d'une recherche arrêtée pour couper court aux sources encore en cours."""
 
 
 def _progress_reset(search_id, mode):
     with _progress_lock:
         _progress.update(running=True, search_id=search_id, mode=mode, sources={}, found=0, tick=0,
-                         started=time.time(), finished=None, error=None, new=0, total=None)
+                         started=time.time(), finished=None, error=None, new=0, total=None, cancelled=False)
+
+
+def _progress_cancel(search_id):
+    with _progress_lock:
+        if _progress["search_id"] == search_id and _progress["running"]:
+            _progress.update(running=False, cancelled=True, finished=time.time(), tick=_progress["tick"] + 1,
+                             total=_progress["found"])
 
 
 def _progress_source(source_id, label=None, status=None, count=None, error=None):
@@ -738,18 +754,25 @@ def _store_is_baseline():
 
 
 def _run_search_background(search_id: str, keywords, sites, source_ids, location=None,
-                            jobicy_geo=None, country_indeed=None, on_complete=None, on_error=None, mode=None):
+                            jobicy_geo=None, country_indeed=None, on_complete=None, on_error=None, mode=None, clean=False):
     q = _current_search["queue"]
     new_urls, new_lock = set(), threading.Lock()
+    seen_urls = set()
     baseline = False
+
+    def stopped():
+        return search_id in _cancelled_ids
 
     def persist(cleaned):
         """Fusionne tout de suite des offres dans le stock permanent : elles sont
         visibles dans l'app dès leur arrivée et survivent à la fin de la recherche."""
+        if stopped():
+            raise _Stopped()
         try:
             fresh, _ = store.upsert_many(cleaned)
             with new_lock:
                 new_urls.update(fresh)
+                seen_urls.update(c["url"] for c in cleaned if c.get("url"))
         except Exception as e:
             print(f"[stock] enregistrement impossible : {type(e).__name__}: {e}")
 
@@ -765,6 +788,8 @@ def _run_search_background(search_id: str, keywords, sites, source_ids, location
             "count": len(result.jobs) if result.jobs else 0,
             "error": result.error,
         }
+        if stopped():
+            raise _Stopped()
         q.put(payload)
         _progress_source(result.source_id, label=result.label, status=result.status,
                          count=payload["count"], error=result.error)
@@ -779,6 +804,8 @@ def _run_search_background(search_id: str, keywords, sites, source_ids, location
     def on_batch(source_id, jobs, total):
         # Offres d'une source qui n'a pas encore fini : enregistrées tout de suite,
         # avec le compteur "en cours" de la source (ligne de progression).
+        if stopped():
+            raise _Stopped()
         cleaned = [_job_to_clean_dict(j) for j in jobs]
         persist(cleaned)
         _progress_found(len(cleaned))
@@ -798,11 +825,18 @@ def _run_search_background(search_id: str, keywords, sites, source_ids, location
             location=location, jobicy_geo=jobicy_geo, country_indeed=country_indeed,
             on_event=on_event, **extra,
         )
+        if stopped():
+            return
         unique = _dedup(all_jobs)
         # Passe finale (idempotente) : rattrape ce qui n'aurait pas été enregistré en route.
         persist([_job_to_clean_dict(j) for j in unique])
         store.finish_run()
-        store.purge(protect_urls=_tracked_urls())
+        if clean:
+            # Nouvelle recherche « à neuf » : l'ancienne liste n'est retirée qu'une fois la nouvelle
+            # terminée (si tu arrêtes en route, rien n'est perdu). Les offres suivies restent.
+            store.purge(protect_urls=set(_tracked_urls()) | seen_urls, days=0)
+        else:
+            store.purge(protect_urls=_tracked_urls())
         _export_files()
 
         _progress_end(search_id, new=len(new_urls), total=len(unique))
@@ -813,7 +847,11 @@ def _run_search_background(search_id: str, keywords, sites, source_ids, location
                 on_complete(unique, set(new_urls), baseline)
             except Exception as e:  # une alerte ratée ne doit pas casser la recherche
                 print(f"[alertes] erreur après recherche : {type(e).__name__}: {e}")
+    except _Stopped:
+        pass   # arrêtée par l'utilisateur : tout ce qui était déjà enregistré est conservé
     except Exception as e:
+        if stopped():
+            return
         _progress_end(search_id, error=f"{type(e).__name__}: {e}")
         q.put({"type": "search_error", "error": f"{type(e).__name__}: {e}"})
         if on_error:
@@ -841,10 +879,6 @@ def _try_start_search(params, on_complete=None, on_error=None):
     with _search_lock:
         if _current_search["queue"] is not None and not _current_search["done"]:
             return None
-        # Nouvelle recherche « à neuf » : on retire les offres non suivies AVANT de lancer les
-        # sources (sinon on effacerait ce qu'elles viennent d'enregistrer). Les offres suivies restent.
-        if params.get("clean"):
-            store.purge(protect_urls=_tracked_urls(), days=0)   # tout sauf les offres suivies
         search_id = str(uuid.uuid4())
         _current_search["id"] = search_id
         _current_search["queue"] = queue.Queue()
@@ -856,11 +890,42 @@ def _try_start_search(params, on_complete=None, on_error=None):
         args=(search_id, params.get("keywords") or None, params.get("sites") or None,
               params.get("source_ids") or None, params.get("location") or None,
               params.get("jobicy_geo") or None, params.get("country_indeed") or None,
-              on_complete, on_error, params.get("mode") if params.get("mode") in ("fast", "deep") else None),
+              on_complete, on_error, params.get("mode") if params.get("mode") in ("fast", "deep") else None,
+              bool(params.get("clean"))),
         daemon=True,
     )
     thread.start()
     return search_id
+
+
+def _stop_search():
+    """Arrête la recherche en cours et l'actualisation éventuelle. Rien n'est supprimé : les offres
+    déjà enregistrées et toutes les recherches sauvegardées restent. True si quelque chose tournait."""
+    was_refresh = False
+    with _refresh_lock:
+        if _refresh["running"]:
+            _refresh["cancel"] = True
+            was_refresh = True
+    sid, q = None, None
+    with _search_lock:
+        if _current_search["queue"] is not None and not _current_search["done"]:
+            sid, q = _current_search["id"], _current_search["queue"]
+            _cancelled_ids.add(sid)
+            _current_search["done"] = True      # libère le serveur : une nouvelle recherche peut démarrer
+    if sid:
+        _progress_cancel(sid)
+        try:
+            q.put({"type": "search_stopped"})
+            q.put(None)
+        except Exception:
+            pass
+    return bool(sid) or was_refresh
+
+
+@app.route("/api/search/stop", methods=["POST"])
+def stop_search():
+    stopped = _stop_search()
+    return jsonify({"stopped": stopped, "stock": store.stats()["total"]})
 
 
 @app.route("/api/progress", methods=["GET"])
@@ -891,7 +956,7 @@ def start_search():
 
 _refresh_lock = threading.Lock()
 _refresh = {"running": False, "index": 0, "total": 0, "label": None, "new": 0,
-            "error": None, "finished": None, "notify": False}
+            "error": None, "finished": None, "notify": False, "cancel": False, "cancelled": False}
 
 
 def _start_refresh(ids=None, notify=False, mode=None):
@@ -905,7 +970,7 @@ def _start_refresh(ids=None, notify=False, mode=None):
         if _refresh["running"]:
             return False
         _refresh.update(running=True, index=0, total=len(items), label=None, new=0,
-                        error=None, finished=None, notify=notify)
+                        error=None, finished=None, notify=notify, cancel=False, cancelled=False)
     if notify:
         alerts.update_state(running=True, last_error=None)
     threading.Thread(target=_refresh_worker, args=(items, notify, mode), daemon=True).start()
@@ -916,6 +981,8 @@ def _refresh_worker(items, notify, mode=None):
     new_all, errors, baseline_any = set(), [], False
     try:
         for i, item in enumerate(items):
+            if _refresh.get("cancel"):
+                break
             _refresh.update(index=i + 1, label=item["label"])
             result, done = {}, threading.Event()
 
@@ -928,15 +995,21 @@ def _refresh_worker(items, notify, mode=None):
                 _d.set()
 
             sid, deadline = None, time.time() + 900
-            while sid is None and time.time() < deadline:
+            while sid is None and time.time() < deadline and not _refresh.get("cancel"):
                 sid = _try_start_search({**item["params"], "mode": mode} if mode else item["params"], ok, bad)   # attend qu'une recherche manuelle finisse
                 if sid is None:
                     time.sleep(0.5)
+            if sid is None and _refresh.get("cancel"):
+                break
             if sid is None:
                 errors.append(f"{item['label']} : une autre recherche occupait le serveur")
                 searches.update(item["id"], last_error="Serveur occupé")
                 continue
-            done.wait(timeout=3600)
+            waited = 0.0
+            while not done.wait(timeout=0.5) and waited < 3600 and not _refresh.get("cancel"):
+                waited += 0.5
+            if _refresh.get("cancel"):
+                break   # arrêtée : on garde cette recherche telle quelle (date de dernière actualisation inchangée)
             err = result.get("error") or (None if result else "Pas de réponse")
             if err:
                 errors.append(f"{item['label']} : {err}")
@@ -950,8 +1023,8 @@ def _refresh_worker(items, notify, mode=None):
         errors.append(f"{type(e).__name__}: {e}")
     finally:
         _refresh.update(running=False, error=" ; ".join(errors) or None,
-                        finished=alerts._iso(alerts._now()))
-        if notify:
+                        finished=alerts._iso(alerts._now()), cancelled=bool(_refresh.get("cancel")))
+        if notify and not _refresh.get("cancel"):
             try:
                 _finish_scheduled(new_all, baseline_any, errors)
             except Exception as e:

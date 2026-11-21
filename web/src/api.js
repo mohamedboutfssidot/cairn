@@ -62,6 +62,7 @@ export const saveSearch = (params, label) => call("/api/searches", { method: "PO
 export const deleteSearch = (id) => call(`/api/searches/${encodeURIComponent(id)}`, { method: "DELETE" });
 // Progression de la recherche en cours : sources, offres trouvées, tick.
 export const fetchProgress = () => call("/api/progress");
+export const stopSearch = () => call("/api/search/stop", { method: "POST" });
 export const fetchRefresh = () => call("/api/refresh");
 // mode : "fast" (API + ATS + Jobicy), "deep" (JobSpy + datasets HF), ou absent = tout
 export const startRefresh = (ids, mode) => call("/api/refresh", { method: "POST", body: { ...(ids ? { ids } : {}), ...(mode ? { mode } : {}) } });
