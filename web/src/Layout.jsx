@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "./store.jsx";
 import { CairnMark, Icon, ICONS, ProgressStrip } from "./ui.jsx";
 import { HelpDrawer, Palette } from "./modals/Dialogs.jsx";
@@ -13,6 +13,7 @@ export default function Layout() {
   const a = useApp();
   const { modal, setModal, run, due, fresh, cand, toast, offline } = a;
   const nav = useNavigate();
+  const loc = useLocation();
 
   useEffect(() => {
     const key = (e) => {
@@ -57,7 +58,7 @@ export default function Layout() {
             <button type="button" className="btn sm" onClick={() => a.loadJobs().catch(() => {})}>Réessayer</button>
           </div>
         )}
-        <Outlet />
+        <div className="route" key={loc.pathname}><Outlet /></div>
       </main>
 
       {modal?.type === "wizard" && <SearchWizard onClose={close} />}
