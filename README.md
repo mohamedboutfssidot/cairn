@@ -13,9 +13,11 @@ Free · self-hosted · your data stays with you.
 
 </div>
 
-<!-- Add a screenshot of the Offers page here:
-![Offers page](docs/offers.png)
--->
+
+
+https://github.com/user-attachments/assets/a2a17cc0-d8a3-4ba7-8edf-2c03928e1aec
+
+
 
 ---
 
